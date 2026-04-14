@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Business Type Detector",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Detects a website's business type and services using an LLM API.",
   "permissions": [
     "activeTab",
