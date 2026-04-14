@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Business Type Detector Panel</title>
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body class="panel-body">
+    <main class="app">
+      <section class="panel">
+        <h1>Business Type Detector</h1>
+        <p class="subtle">Latest result from the workspace.</p>
+
+        <p id="status" class="status" aria-live="polite"></p>
+
+        <section id="emptyState" class="history-empty-block">
+          <p class="history-empty">Run an analysis from the popup to load results here.</p>
+        </section>
+
+        <section id="result" class="result hidden">
+          <div class="result-header">
+            <h2 id="businessType">Unknown</h2>
+            <span id="confidence" class="pill">Confidence: n/a</span>
+          </div>
+          <p id="summary" class="summary"></p>
+
+          <div class="grid">
+            <div>
+              <h3>Industry</h3>
+              <p id="industry"></p>
+            </div>
+            <div>
+              <h3>Website Signals</h3>
+              <p id="websiteSignals"></p>
+            </div>
+          </div>
+
+          <div>
+            <h3>Services</h3>
+            <ul id="services"></ul>
+          </div>
+
+          <div>
+            <h3>People</h3>
+            <ul id="people"></ul>
+          </div>
+
+          <div>
+            <h3>Team Details</h3>
+            <p id="teamSummary"></p>
+          </div>
+
+          <div>
+            <h3>Evidence</h3>
+            <ul id="evidence"></ul>
+          </div>
+
+          <div>
+            <h3>Raw JSON</h3>
+            <pre id="raw"></pre>
+          </div>
+
+          <div class="result-actions">
+            <button id="copyJson" class="secondary">Copy JSON</button>
+            <button id="exportCsv" class="secondary">Export CSV</button>
+          </div>
+        </section>
+
+      </section>
+    </main>
+    <script type="module" src="sidepanel.js"></script>
+  </body>
+</html>
