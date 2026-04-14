@@ -34,6 +34,7 @@
               <span>Provider</span>
               <select id="provider">
                 <option value="groq">Groq (Cloud)</option>
+                <option value="openrouter">OpenRouter (Cloud)</option>
                 <option value="ollama">Ollama (Local)</option>
               </select>
             </label>
@@ -51,6 +52,14 @@
               <label class="field">
                 <span>Ollama URL</span>
                 <input id="ollamaBaseUrl" type="url" placeholder="http://localhost:11434">
+              </label>
+            </div>
+
+            <div id="openrouterFields" class="hidden">
+              <p class="subtle">Uses OpenRouter with reasoning enabled and the default `openrouter/free` model.</p>
+              <label class="field">
+                <span>OpenRouter API Key</span>
+                <input id="openrouterApiKey" type="password" placeholder="sk-or-v1-...">
               </label>
             </div>
           </details>

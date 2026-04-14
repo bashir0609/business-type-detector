@@ -116,6 +116,7 @@
               <span class="field-label">Provider</span>
               <select id="provider">
                 <option value="groq">Groq (Cloud)</option>
+                <option value="openrouter">OpenRouter (Cloud)</option>
                 <option value="ollama">Ollama (Local)</option>
               </select>
             </label>
@@ -123,6 +124,12 @@
               <label class="field">
                 <span class="field-label">Groq API key</span>
                 <input id="groqApiKey" type="password" placeholder="gsk_…" autocomplete="off">
+              </label>
+            </div>
+            <div id="openrouterFields" class="hidden">
+              <label class="field">
+                <span class="field-label">OpenRouter API key</span>
+                <input id="openrouterApiKey" type="password" placeholder="sk-or-v1-…" autocomplete="off">
               </label>
             </div>
             <div id="ollamaFields" class="hidden">

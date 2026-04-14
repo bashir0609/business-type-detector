@@ -1,16 +1,20 @@
 const DEFAULT_SETTINGS = {
   provider: "groq",
   groqApiBaseUrl: "https://api.groq.com/openai/v1/chat/completions",
+  openrouterApiBaseUrl: "https://openrouter.ai/api/v1/chat/completions",
   ollamaBaseUrl: "http://localhost:11434",
-  model: "llama-3.3-70b-versatile"
+  model: "llama-3.3-70b-versatile",
+  openrouterModel: "openrouter/free"
 };
 const STORAGE_KEYS = ["providerApiKeys", "provider", "ollamaBaseUrl"];
 const PROVIDER_LABELS = {
   groq: "Groq",
+  openrouter: "OpenRouter",
   ollama: "Ollama"
 };
 const GROQ_MODELS_ENDPOINT = "https://api.groq.com/openai/v1/models";
 const OLLAMA_DEFAULT_MODELS = ["llama3.2", "llama3.1", "mistral", "llama2"];
+const OPENROUTER_DEFAULT_MODELS = [DEFAULT_SETTINGS.openrouterModel];
 const GROQ_MODEL_CACHE_TTL_MS = 5 * 60 * 1000;
 const GROQ_FREE_TIER_MODEL_ORDER = [
   "groq/compound-mini",
@@ -58,9 +62,11 @@ function slimPageData(pageData, maxBodyChars = 1200) {
     url: pageData.url,
     description: pageData.description,
     headings: (pageData.headings || []).slice(0, maxHeadings),
+    metadata: Object.fromEntries(Object.entries(pageData.metadata || {}).slice(0, 10)),
     bodyText: (pageData.bodyText || "").slice(0, maxBodyChars),
     people: (pageData.people || []).slice(0, maxPeople),
-    teamSnippets: (pageData.teamSnippets || []).slice(0, maxSnippets)
+    teamSnippets: (pageData.teamSnippets || []).slice(0, maxSnippets),
+    linkHints: (pageData.linkHints || []).slice(0, 20)
   };
 
   if (Array.isArray(pageData.discoveredPages) && pageData.discoveredPages.length > 0) {
@@ -68,8 +74,10 @@ function slimPageData(pageData, maxBodyChars = 1200) {
       title: p.title,
       url: p.url,
       headings: (p.headings || []).slice(0, 5),
+      metadata: Object.fromEntries(Object.entries(p.metadata || {}).slice(0, 6)),
       bodyText: (p.bodyText || "").slice(0, discBodyChars),
-      people: (p.people || []).slice(0, 3)
+      people: (p.people || []).slice(0, 3),
+      linkHints: (p.linkHints || []).slice(0, 8)
     }));
   }
 
@@ -79,8 +87,8 @@ function slimPageData(pageData, maxBodyChars = 1200) {
 function buildPrompt(pageData, maxBodyChars = 3000) {
   return [
     "You are a business intelligence classifier.",
-    "Infer the most likely business type and services from the website data.",
-    "Pay close attention to: services pages, about pages, page headings, and body text describing what the business does.",
+    "Infer the most likely business type, industry, and service or product offerings from the website data.",
+    "Pay close attention to service pages, solution pages, product pages, about/company pages, industries pages, case studies, pricing pages, FAQ pages, and headings or metadata that describe what the organization actually does.",
     "The 'discoveredPages' field contains additional pages crawled from the site — use them to improve accuracy.",
     "Return strict JSON with this exact shape:",
     JSON.stringify({
@@ -106,10 +114,10 @@ function buildPrompt(pageData, maxBodyChars = 3000) {
 
 function buildPickPagesPrompt(homepage, focus = "business") {
   const goal = focus === "employee"
-    ? "find pages most likely to contain team members, staff bios, founders, executives, or people profiles"
-    : "find pages most likely to reveal what the business does, its services, products, or industry";
+    ? "find pages most likely to contain team members, staff directories, leadership rosters, founders, executives, or individual people profile pages"
+    : "find pages most likely to reveal what the business does, including services, products, solutions, pricing, industries served, case studies, and company description";
 
-  const maxPages = focus === "employee" ? 6 : 3;
+  const maxPages = focus === "employee" ? 10 : 6;
 
   return [
     `You are helping analyze a website. Your goal: ${goal}.`,
@@ -121,6 +129,8 @@ function buildPickPagesPrompt(homepage, focus = "business") {
     "- only pick URLs that appear in the links list",
     `- pick at most ${maxPages} URLs`,
     "- do not include the homepage URL itself",
+    "- for employee mode, prefer directory pages first, then individual bio/profile pages",
+    "- for business mode, diversify across service/product pages, about/company pages, pricing/solution pages, industry pages, and case studies when available",
     "- do not include markdown",
     "- if no useful links exist, return { urls: [] }",
     "",
@@ -133,12 +143,13 @@ function buildPickPagesPrompt(homepage, focus = "business") {
 function buildEmployeePrompt(pageData, maxBodyChars = 3000) {
   return [
     "You are an expert at extracting people and employee details from website content.",
-    "Extract every real person mentioned — founders, executives, team members, advisors, directors, staff, and contacts.",
-    "Look in: headings, body text, team sections, bios, about pages, contact pages, and JSON-LD data.",
+    "Extract every real person listed as part of the organization — founders, executives, leadership, team members, advisors, directors, staff, practitioners, agents, attorneys, doctors, therapists, and similar roles.",
+    "Look in: team directories, staff rosters, bios, profile pages, about pages, contact pages, headings, body text, and JSON-LD data.",
     "Common patterns to detect:",
     "  - 'Name - Title'  or  'Name, Title'  or  'Name | Role'",
     "  - Person cards with name + role text",
     "  - JSON-LD Person schema blocks",
+    "  - Staff directory pages plus links to individual bio pages",
     "  - mailto: links (extract the name nearby)",
     "Return strict JSON with this exact shape:",
     JSON.stringify({
@@ -155,7 +166,7 @@ function buildEmployeePrompt(pageData, maxBodyChars = 3000) {
       evidence: ["reason 1", "reason 2"]
     }),
     "Rules:",
-    "- Extract ALL people found, up to 50",
+    "- Extract ALL people found, up to 150",
     "- people must be an array of objects",
     "- each person object may include only: name, title, email, phone, linkedinUrl",
     "- do NOT invent or guess contact details — only include what is explicitly on the page",
@@ -277,13 +288,15 @@ function keyLooksLike(provider, key) {
   switch (provider) {
     case "groq":
       return /^gsk_[0-9A-Za-z]+/i.test(normalized);
+    case "openrouter":
+      return /^sk-or-v1-/i.test(normalized) || /^sk-or-/i.test(normalized);
     default:
       return true;
   }
 }
 
 function findLikelyProviderForKey(key) {
-  return ["groq"].find((provider) => keyLooksLike(provider, key)) || null;
+  return ["groq", "openrouter"].find((provider) => keyLooksLike(provider, key)) || null;
 }
 
 function getApiKeyValidationError(provider, apiKey) {
@@ -293,11 +306,15 @@ function getApiKeyValidationError(provider, apiKey) {
 
   const key = normalizeApiKey(apiKey);
   if (!key) {
-    return `Missing API key for ${PROVIDER_LABELS[provider] || provider}. No saved Groq API key was found in extension storage.`;
+    return `Missing API key for ${PROVIDER_LABELS[provider] || provider}. No saved ${PROVIDER_LABELS[provider] || provider} API key was found in extension storage.`;
   }
 
   if (provider === "groq" && !keyLooksLike("groq", key)) {
     return "The saved Groq API key does not look valid. Groq keys usually start with \"gsk_\".";
+  }
+
+  if (provider === "openrouter" && !keyLooksLike("openrouter", key)) {
+    return "The saved OpenRouter API key does not look valid. OpenRouter keys usually start with \"sk-or-\".";
   }
 
   return "";
@@ -313,7 +330,7 @@ function buildAuthErrorMessage(settings, error) {
     ? ` ${providerLabel} rejected the saved API key.${mismatchHint}`
     : "";
 
-  return `Authentication failed for ${providerLabel}.${invalidKeyHint} Replace the saved Groq API key and reload the extension.`;
+  return `Authentication failed for ${providerLabel}.${invalidKeyHint} Replace the saved ${providerLabel} API key and reload the extension.`;
 }
 
 async function requestModel(settings, promptText, model, maxTokens = 1200) {
@@ -339,6 +356,10 @@ async function requestModel(settings, promptText, model, maxTokens = 1200) {
       }
     ]
   };
+
+  if (settings.provider === "openrouter") {
+    body.reasoning = { enabled: true };
+  }
 
   if (settings.provider !== "ollama") {
     body.response_format = { type: "json_object" };
@@ -369,6 +390,7 @@ async function requestModel(settings, promptText, model, maxTokens = 1200) {
   return {
     ...parsed,
     modelUsed: model,
+    reasoningDetails: payload?.choices?.[0]?.message?.reasoning_details || null,
     rawResponse: payload
   };
 }
@@ -394,9 +416,17 @@ async function getOllamaModelCandidates(settings) {
   }
 }
 
+async function getOpenRouterModelCandidates(settings) {
+  return [settings.openrouterModel || DEFAULT_SETTINGS.openrouterModel, ...OPENROUTER_DEFAULT_MODELS]
+    .filter(Boolean)
+    .filter((value, index, list) => list.indexOf(value) === index);
+}
+
 async function analyzeWithApi(settings, promptBuilder, isEmployeeAnalysis = false) {
   const candidates = settings.provider === "ollama"
     ? await getOllamaModelCandidates(settings)
+    : settings.provider === "openrouter"
+    ? await getOpenRouterModelCandidates(settings)
     : await getGroqModelCandidates(settings);
   let lastError = null;
   let maxBodyChars = 1200;
@@ -409,7 +439,7 @@ async function analyzeWithApi(settings, promptBuilder, isEmployeeAnalysis = fals
     } catch (error) {
       lastError = error;
       if (error?.status === 401) {
-        if (settings.provider === "groq") {
+        if (settings.provider === "groq" || settings.provider === "openrouter") {
           throw new Error(buildAuthErrorMessage(settings, error));
         }
         throw error;
@@ -465,12 +495,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       ...(stored.providerApiKeys || {}),
       ...(sessionStored.providerApiKeys || {})
     };
-    settings.apiKey = normalizeApiKey(providerApiKeys.groq);
+    settings.apiKey = normalizeApiKey(providerApiKeys[settings.provider] || providerApiKeys.groq);
     settings.provider = sessionStored.provider || stored.provider || localStored.provider || DEFAULT_SETTINGS.provider;
     settings.ollamaBaseUrl = sessionStored.ollamaBaseUrl || stored.ollamaBaseUrl || localStored.ollamaBaseUrl || DEFAULT_SETTINGS.ollamaBaseUrl;
+    settings.openrouterModel = DEFAULT_SETTINGS.openrouterModel;
     settings.apiBaseUrl = settings.provider === "ollama"
       ? `${settings.ollamaBaseUrl}/v1/chat/completions`
+      : settings.provider === "openrouter"
+      ? DEFAULT_SETTINGS.openrouterApiBaseUrl
       : DEFAULT_SETTINGS.groqApiBaseUrl;
+    settings.apiKey = normalizeApiKey(providerApiKeys[settings.provider]);
 
     const apiKeyError = getApiKeyValidationError(settings.provider, settings.apiKey);
     if (apiKeyError) {
