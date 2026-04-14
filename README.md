@@ -1,1 +1,0 @@
-# business-type-detector

@@ -915,3 +915,48 @@ button.small {
   color: var(--c-ok) !important;
   border-color: var(--c-ok-bg) !important;
 }
+
+/* ── Service keyword triggers ──────────────────────────────── */
+.kw-section { display: flex; flex-direction: column; gap: 8px; }
+.kw-section-label {
+  font-size: 10px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: .07em; color: var(--c-hint); padding-bottom: 2px;
+}
+.kw-input-row { display: flex; gap: 6px; }
+.kw-input-row input {
+  flex: 1; padding: 7px 10px; font-size: 12px; font-family: var(--font);
+  color: var(--c-text); background: var(--c-surface);
+  border: 1px solid var(--c-border-md); border-radius: var(--radius-sm);
+  outline: none; width: auto;
+}
+.kw-input-row input:focus { border-color: var(--c-accent); box-shadow: 0 0 0 3px rgba(26,86,219,.12); }
+.kw-input-row input::placeholder { color: var(--c-hint); }
+.kw-add-btn {
+  padding: 7px 11px; font-size: 12px; font-weight: 600; font-family: var(--font);
+  color: var(--c-accent); background: rgba(26,86,219,.07);
+  border: 1px solid rgba(26,86,219,.2); border-radius: var(--radius-sm);
+  cursor: pointer; white-space: nowrap; transition: background 120ms;
+}
+.kw-add-btn:hover { background: rgba(26,86,219,.14); }
+.kw-tags { display: flex; flex-wrap: wrap; gap: 5px; min-height: 22px; }
+.kw-tag {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 3px 8px 3px 10px; font-size: 11px; font-weight: 500;
+  color: var(--c-accent); background: rgba(26,86,219,.07);
+  border: 1px solid rgba(26,86,219,.18); border-radius: 20px;
+}
+.kw-tag-del {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 14px; height: 14px; font-size: 14px; line-height: 1;
+  color: var(--c-hint); cursor: pointer; border-radius: 50%;
+  transition: background 100ms, color 100ms;
+}
+.kw-tag-del:hover { background: rgba(180,35,24,.1); color: var(--c-err); }
+.kw-hint { font-size: 11px; color: var(--c-hint); line-height: 1.5; }
+.kw-status {
+  display: flex; align-items: center; gap: 6px; padding: 6px 10px;
+  border-radius: var(--radius-sm); font-size: 11px; font-weight: 600;
+}
+.kw-status--idle { background: var(--c-surface2); color: var(--c-hint); border: 1px solid var(--c-border); }
+.kw-status--match { background: var(--c-ok-bg); color: var(--c-ok); border: 1px solid transparent; }
+.kw-status--triggered { background: var(--c-warn-bg); color: var(--c-warn); border: 1px solid transparent; }

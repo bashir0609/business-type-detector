@@ -90,6 +90,20 @@
           </button>
         </div>
 
+	<!-- Service keyword triggers -->
+	<div class="sidebar-block" style="padding-top:0;">
+	  <div class="kw-section">
+	    <div class="kw-section-label">Service keyword triggers</div>
+	    <div class="kw-input-row">
+	      <input id="kwInput" type="text" placeholder="e.g. consulting, SaaS…" autocomplete="off">
+	      <button id="kwAdd" class="kw-add-btn">Add</button>
+	    </div>
+	    <div class="kw-tags" id="kwTags"></div>
+	    <p class="kw-hint">If analysis services match any keyword, employee analysis runs automatically.</p>
+	    <div class="kw-status kw-status--idle" id="kwStatus">No keywords set</div>
+	  </div>
+	</div>
+
         <!-- Settings (collapsed by default) -->
         <details class="settings-drawer" id="settingsDrawer">
           <summary class="settings-toggle">

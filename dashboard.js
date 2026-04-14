@@ -1,8 +1,11 @@
 const LATEST_RESULT_KEY = "latestAnalysis";
+const KW_STORAGE_KEY = "serviceKeywords";
 const MAX_PAGE_BODY_CHARS = 700;
 const MAX_SUMMARY_BODY_CHARS = 1000;
 
 let latestResult = null;
+let serviceKeywords = [];
+
 const elements = {
   provider: document.getElementById("provider"),
   groqFields: document.getElementById("groqFields"),
@@ -107,7 +110,6 @@ async function saveSettings() {
   };
   const provider = elements.provider.value;
   const ollamaBaseUrl = elements.ollamaBaseUrl.value.trim() || "http://localhost:11434";
-  // API keys go to session only; non-secret prefs sync across devices
   await chrome.storage.sync.set({ provider, ollamaBaseUrl });
   await chrome.storage.session.set({ providerApiKeys, provider, ollamaBaseUrl });
   setStatus("Settings saved.");
@@ -141,7 +143,6 @@ function normalizePeople(people) {
     .filter(Boolean);
 }
 
-
 function dedupePeople(people) {
   const map = new Map();
   for (const person of people || []) {
@@ -153,6 +154,7 @@ function dedupePeople(people) {
   }
   return [...map.values()];
 }
+
 function csvEscape(value) {
   const text = String(value ?? "");
   return `"${text.replace(/"/g, '""')}"`;
@@ -322,6 +324,74 @@ function compactResearchPayload(pageData, maxPages = MAX_RESEARCH_PAGES) {
   };
 }
 
+// ── Service keyword triggers ─────────────────────────────────
+
+function renderKeywordTags() {
+  const container = document.getElementById("kwTags");
+  const statusEl = document.getElementById("kwStatus");
+  container.replaceChildren();
+  serviceKeywords.forEach((kw, i) => {
+    const span = document.createElement("span");
+    span.className = "kw-tag";
+    span.innerHTML = `${kw}<span class="kw-tag-del" data-i="${i}">\u00d7</span>`;
+    container.appendChild(span);
+  });
+  if (serviceKeywords.length === 0) {
+    statusEl.className = "kw-status kw-status--idle";
+    statusEl.textContent = "No keywords set";
+  } else {
+    statusEl.className = "kw-status kw-status--match";
+    statusEl.textContent = `Auto-trigger active \u2014 ${serviceKeywords.length} keyword${serviceKeywords.length > 1 ? "s" : ""}`;
+  }
+}
+
+async function saveKeywords() {
+  await chrome.storage.local.set({ [KW_STORAGE_KEY]: serviceKeywords });
+}
+
+async function loadKeywords() {
+  const stored = await chrome.storage.local.get([KW_STORAGE_KEY]);
+  serviceKeywords = stored[KW_STORAGE_KEY] || [];
+  renderKeywordTags();
+}
+
+function addKeyword(value) {
+  const kw = value.trim().toLowerCase();
+  if (!kw || serviceKeywords.includes(kw)) return;
+  serviceKeywords.push(kw);
+  renderKeywordTags();
+  saveKeywords();
+}
+
+function removeKeyword(index) {
+  serviceKeywords.splice(index, 1);
+  renderKeywordTags();
+  saveKeywords();
+}
+
+function checkAndAutoTriggerEmployee(result) {
+  if (!serviceKeywords.length || !result?.services?.length) return;
+  const services = result.services.map(s => s.toLowerCase());
+  const matched = serviceKeywords.find(kw =>
+    services.some(svc => svc.includes(kw))
+  );
+  if (!matched) return;
+
+  const statusEl = document.getElementById("kwStatus");
+  statusEl.className = "kw-status kw-status--triggered";
+  statusEl.textContent = `Matched "${matched}" \u2014 running employee analysis\u2026`;
+
+  setTimeout(() => {
+    if (latestResult?.url) {
+      analyzeEmployeeDetailsForUrl(latestResult.url).catch(err => {
+        setStatus(err.message || "Auto employee analysis failed.", true);
+      });
+    }
+  }, 800);
+}
+
+// ── Render result ────────────────────────────────────────────
+
 function renderResult(result) {
   latestResult = result;
   if (!result) {
@@ -361,10 +431,8 @@ function renderResult(result) {
   updateDomainBadge(result.url);
   elements.recentSiteNote.textContent = `Latest site analyzed: ${result.url}`;
 
-  // Populate classification strip
   elements.csBusinessType.textContent = result.businessType || "Unknown";
   elements.csIndustry.textContent = result.industry || "—";
-  // Render services as pill tags
   elements.csServices.replaceChildren();
   const services = result.services && result.services.length ? result.services : [];
   if (services.length) {
@@ -386,6 +454,9 @@ function renderResult(result) {
   elements.classificationStrip.classList.remove("hidden");
 
   setEmployeeButtonState();
+  if (result && !result.employeeAnalysisComplete) {
+    checkAndAutoTriggerEmployee(result);
+  }
 }
 
 async function loadState() {
@@ -399,7 +470,6 @@ async function exportCsv() {
     setStatus("No analysis available to export.", true);
     return;
   }
-
   const header = ["analyzedAt", "title", "url", "businessType", "industry", "confidence", "services", "people", "teamSummary", "summary", "evidence", "websiteSignals"].join(",");
   const lines = [header, buildCsvRow(latestResult)];
   downloadFile("business-type-history.csv", `${lines.join("\n")}\n`, "text/csv;charset=utf-8");
@@ -411,7 +481,6 @@ async function copyJson() {
     setStatus("No result available yet.", true);
     return;
   }
-
   await navigator.clipboard.writeText(JSON.stringify(latestResult, null, 2));
   setStatus("JSON copied.");
 }
@@ -425,23 +494,15 @@ function extractPageData() {
     const walker = document.createTreeWalker(document.body || document.documentElement, NodeFilter.SHOW_TEXT);
     const chunks = [];
     let total = 0;
-
     while (walker.nextNode()) {
       const value = walker.currentNode.nodeValue?.replace(/\s+/g, " ").trim();
-      if (!value) {
-        continue;
-      }
+      if (!value) continue;
       const parent = walker.currentNode.parentElement;
-      if (!parent || ["SCRIPT", "STYLE", "NOSCRIPT"].includes(parent.tagName)) {
-        continue;
-      }
+      if (!parent || ["SCRIPT", "STYLE", "NOSCRIPT"].includes(parent.tagName)) continue;
       chunks.push(value);
       total += value.length + 1;
-      if (total > limit) {
-        break;
-      }
+      if (total > limit) break;
     }
-
     return chunks.join(" ");
   }
 
@@ -450,27 +511,19 @@ function extractPageData() {
     for (const element of document.querySelectorAll("meta[name], meta[property]")) {
       const key = element.getAttribute("name") || element.getAttribute("property");
       const value = element.getAttribute("content");
-      if (key && value) {
-        meta[key] = value;
-      }
+      if (key && value) meta[key] = value;
     }
     return meta;
   }
 
   function walkJson(value, visitor) {
-    if (!value || typeof value !== "object") {
-      return;
-    }
+    if (!value || typeof value !== "object") return;
     visitor(value);
     if (Array.isArray(value)) {
-      for (const item of value) {
-        walkJson(item, visitor);
-      }
+      for (const item of value) walkJson(item, visitor);
       return;
     }
-    for (const nested of Object.values(value)) {
-      walkJson(nested, visitor);
-    }
+    for (const nested of Object.values(value)) walkJson(nested, visitor);
   }
 
   function normalizeLinkedinUrl(value) {
@@ -489,20 +542,14 @@ function extractPageData() {
     return digits.length >= 7 ? text : "";
   }
 
-  // Validates that a string looks like a real human name
   function isLikelyPersonName(name) {
     if (!name || name.length < 4 || name.length > 60) return false;
     const words = name.trim().split(/\s+/);
-    // Must have at least 2 words
     if (words.length < 2) return false;
-    // Each word should start with uppercase
     if (!words.every(w => /^[A-Z]/.test(w))) return false;
-    // Reject obvious UI/nav text
     const uiPhrases = /^(contact|home|about|services|our|the|get|learn|read|view|see|click|sign|log|call|email|send|submit|next|back|more|buy|sell|rent|find|search|menu|close|open|toggle|follow|share|book|request|download|upload|register|login|join|apply|explore|discover|navigate|skip|go to|back to|return|continue|cancel|confirm|yes|no|ok|done|save|edit|delete|add|remove|new|all|other|team|staff|people|company|office|phone|fax|address|website|social|media|news|blog|events|gallery|portfolio|careers|faqs?|privacy|terms|copyright|sitemap|policy)/i;
     if (uiPhrases.test(name.trim())) return false;
-    // Reject if contains digits, special chars (except hyphens/apostrophes in names)
     if (/[0-9@#$%^&*()_+=\[\]{};:"<>?\/|]/.test(name)) return false;
-    // Reject long sentences (not a name)
     if (words.length > 5) return false;
     return true;
   }
@@ -511,18 +558,10 @@ function extractPageData() {
     const merged = new Map();
     for (const person of people) {
       const name = String(person?.name || "").trim();
-      if (!name) {
-        continue;
-      }
+      if (!name) continue;
       if (!isLikelyPersonName(name)) continue;
       const key = name.toLowerCase();
-      const current = merged.get(key) || {
-        name,
-        title: "",
-        email: "",
-        phone: "",
-        linkedinUrl: ""
-      };
+      const current = merged.get(key) || { name, title: "", email: "", phone: "", linkedinUrl: "" };
       current.title = current.title || String(person.title || "").trim();
       current.email = current.email || normalizeEmail(person.email);
       current.phone = current.phone || normalizePhone(person.phone);
@@ -540,83 +579,45 @@ function extractPageData() {
         walkJson(payload, (node) => {
           const typeValue = node["@type"];
           const types = Array.isArray(typeValue) ? typeValue : [typeValue];
-          if (!types.includes("Person")) {
-            return;
-          }
+          if (!types.includes("Person")) return;
           const name = String(node.name || "").trim();
           const title = String(node.jobTitle || node.roleName || node.description || "").trim();
-          if (!name) {
-            return;
-          }
-          people.push({
-            name,
-            title,
-            email: node.email || "",
-            phone: node.telephone || "",
-            linkedinUrl: node.sameAs || node.url || ""
-          });
+          if (!name) return;
+          people.push({ name, title, email: node.email || "", phone: node.telephone || "", linkedinUrl: node.sameAs || node.url || "" });
         });
-      } catch {
-        // Ignore malformed JSON-LD blocks.
-      }
+      } catch {}
     }
     return people;
   }
 
   function collectPeopleFromDom() {
     const people = [];
-
-    // Broad container selectors — covers most CMS/framework patterns
     const containerSelectors = [
-      "[class*='team']", "[id*='team']",
-      "[class*='staff']", "[id*='staff']",
-      "[class*='people']", "[id*='people']",
-      "[class*='person']", "[id*='person']",
-      "[class*='member']", "[id*='member']",
-      "[class*='leader']", "[id*='leader']",
-      "[class*='leadership']", "[id*='leadership']",
-      "[class*='executive']", "[id*='executive']",
-      "[class*='director']", "[id*='director']",
-      "[class*='founder']", "[id*='founder']",
-      "[class*='management']", "[id*='management']",
-      "[class*='advisor']", "[id*='advisor']",
-      "[class*='board']", "[id*='board']",
-      "[class*='profile']", "[id*='profile']",
-      "[class*='bio']", "[id*='bio']",
-      "[class*='employee']", "[id*='employee']",
-      "[class*='about']", "[id*='about']",
-      "[class*='crew']", "[id*='crew']",
-      "[class*='partner']", "[id*='partner']",
+      "[class*='team']","[id*='team']","[class*='staff']","[id*='staff']",
+      "[class*='people']","[id*='people']","[class*='person']","[id*='person']",
+      "[class*='member']","[id*='member']","[class*='leader']","[id*='leader']",
+      "[class*='leadership']","[id*='leadership']","[class*='executive']","[id*='executive']",
+      "[class*='director']","[id*='director']","[class*='founder']","[id*='founder']",
+      "[class*='management']","[id*='management']","[class*='advisor']","[id*='advisor']",
+      "[class*='board']","[id*='board']","[class*='profile']","[id*='profile']",
+      "[class*='bio']","[id*='bio']","[class*='employee']","[id*='employee']",
+      "[class*='about']","[id*='about']","[class*='crew']","[id*='crew']",
+      "[class*='partner']","[id*='partner']"
     ];
-
     const seen = new Set();
     const teamContainers = Array.from(document.querySelectorAll(containerSelectors.join(","))).slice(0, 40);
-
     for (const container of teamContainers) {
-      // Look for card-like children — be generous with depth
       const cards = Array.from(container.querySelectorAll("article, li, [class*='card'], [class*='item'], [class*='entry'], div, section")).slice(0, 60);
       for (const card of cards) {
-        // Skip containers that are too large (likely a wrapper, not a card)
         const cardText = textValue(card);
         if (cardText.length > 600) continue;
-
-        const name = textValue(card.querySelector("h1, h2, h3, h4, h5, h6, strong, b, [class*='name'], [itemprop='name']"))
-          || textValue(card.querySelector("a"));
-
+        const name = textValue(card.querySelector("h1, h2, h3, h4, h5, h6, strong, b, [class*='name'], [itemprop='name']")) || textValue(card.querySelector("a"));
         if (!isLikelyPersonName(name)) continue;
-        // Deduplicate by name
         if (seen.has(name.toLowerCase())) continue;
-
-        const role = textValue(card.querySelector([
-          "[class*='title']", "[class*='role']", "[class*='position']",
-          "[class*='designation']", "[class*='job']", "[itemprop='jobTitle']",
-          "p", "span", "small", "em"
-        ].join(",")));
-
+        const role = textValue(card.querySelector("[class*='title'], [class*='role'], [class*='position'], [class*='designation'], [class*='job'], [itemprop='jobTitle'], p, span, small, em"));
         const emailLink = card.querySelector("a[href^='mailto:']");
         const phoneLink = card.querySelector("a[href^='tel:']");
         const linkedinLink = Array.from(card.querySelectorAll("a[href]")).find((l) => /linkedin\.com/i.test(l.href));
-
         seen.add(name.toLowerCase());
         people.push({
           name,
@@ -628,20 +629,15 @@ function extractPageData() {
         if (people.length >= 40) return mergePeople(people);
       }
     }
-
     return mergePeople(people);
   }
 
   function collectPeopleFromText() {
     const text = collectVisibleText(15000);
     const matches = [];
-
-    // Pattern 1: Name - Title  or  Name — Title  or  Name | Title
     const dashPattern = /\b([A-Z][a-z]+(?:\s+[A-Z][a-z.'\-]+){1,3})\s*[-–—|]\s*([A-Z][A-Za-z/&(),'\-.\s]{2,80})/g;
-    // Pattern 2: Name, Title (comma separated)
     const commaPattern = /\b([A-Z][a-z]+(?:\s+[A-Z][a-z.'\-]+){1,3}),\s*([A-Z][A-Za-z/&(),'\-.\s]{4,80})/g;
     const roleKeywords = /(founder|co-founder|ceo|cto|cfo|coo|cmo|director|manager|lead|head|principal|partner|consultant|engineer|designer|advisor|president|chair|vp |vice president|staff|operations|marketing|sales|specialist|officer|associate|analyst|coordinator|executive|secretary|treasurer)/i;
-
     for (const pat of [dashPattern, commaPattern]) {
       let match;
       while ((match = pat.exec(text)) !== null) {
@@ -653,29 +649,20 @@ function extractPageData() {
         if (matches.length >= 30) break;
       }
     }
-
     return mergePeople(matches);
   }
 
   function collectTeamSnippets() {
     const snippets = [];
     const keywordPattern = /(team|staff|leadership|founder|about us|about|management|employee|our people|who we are)/i;
-
     for (const node of document.querySelectorAll("section, article, div")) {
       const idClass = `${node.id || ""} ${node.className || ""}`;
       const heading = textValue(node.querySelector("h1, h2, h3, h4"));
-      if (!keywordPattern.test(`${idClass} ${heading}`)) {
-        continue;
-      }
+      if (!keywordPattern.test(`${idClass} ${heading}`)) continue;
       const text = textValue(node).slice(0, 240);
-      if (text) {
-        snippets.push(text);
-      }
-      if (snippets.length >= 6) {
-        break;
-      }
+      if (text) snippets.push(text);
+      if (snippets.length >= 6) break;
     }
-
     return snippets;
   }
 
@@ -684,11 +671,9 @@ function extractPageData() {
     .filter(Boolean)
     .slice(0, 20);
 
-  // Collect links with source context for smarter scoring
   function collectLinks() {
     const seen = new Set();
     const results = [];
-
     function addLinks(nodes, source) {
       for (const node of nodes) {
         const href = node.href;
@@ -698,54 +683,19 @@ function extractPageData() {
         results.push({ text, href, source });
       }
     }
-
-    // 1. Navbar / primary navigation — highest trust
-    const navSelectors = [
-      "nav", "header nav", "[role='navigation']",
-      "[class*='navbar']", "[class*='nav-bar']", "[class*='navigation']",
-      "[class*='menu']", "[id*='menu']", "[id*='nav']",
-      "header", "[class*='header']"
-    ];
-    for (const sel of navSelectors) {
-      addLinks(document.querySelectorAll(`${sel} a[href]`), "nav");
-    }
-
-    // 2. Footer — often has full sitemap-style links
-    const footerSelectors = [
-      "footer", "[role='contentinfo']",
-      "[class*='footer']", "[id*='footer']"
-    ];
-    for (const sel of footerSelectors) {
-      addLinks(document.querySelectorAll(`${sel} a[href]`), "footer");
-    }
-
-    // 3. Sitemap page links — <a> tags in sitemap-like containers
-    const sitemapSelectors = [
-      "[class*='sitemap']", "[id*='sitemap']",
-      "[class*='site-map']", "[id*='site-map']"
-    ];
-    for (const sel of sitemapSelectors) {
-      addLinks(document.querySelectorAll(`${sel} a[href]`), "sitemap");
-    }
-
-    // 4. Agent/profile/team card links — common in RE, legal, medical sites
-    const profileSelectors = [
-      "[class*='agent'] a", "[class*='staff'] a", "[class*='team'] a",
-      "[class*='member'] a", "[class*='profile'] a", "[class*='people'] a",
-      "[class*='person'] a", "[class*='consultant'] a", "[class*='advisor'] a"
-    ];
-    for (const sel of profileSelectors) {
-      addLinks(document.querySelectorAll(sel), "profile");
-    }
-
-    // 5. All remaining page links (body content)
+    const navSelectors = ["nav","header nav","[role='navigation']","[class*='navbar']","[class*='nav-bar']","[class*='navigation']","[class*='menu']","[id*='menu']","[id*='nav']","header","[class*='header']"];
+    for (const sel of navSelectors) addLinks(document.querySelectorAll(`${sel} a[href]`), "nav");
+    const footerSelectors = ["footer","[role='contentinfo']","[class*='footer']","[id*='footer']"];
+    for (const sel of footerSelectors) addLinks(document.querySelectorAll(`${sel} a[href]`), "footer");
+    const sitemapSelectors = ["[class*='sitemap']","[id*='sitemap']","[class*='site-map']","[id*='site-map']"];
+    for (const sel of sitemapSelectors) addLinks(document.querySelectorAll(`${sel} a[href]`), "sitemap");
+    const profileSelectors = ["[class*='agent'] a","[class*='staff'] a","[class*='team'] a","[class*='member'] a","[class*='profile'] a","[class*='people'] a","[class*='person'] a","[class*='consultant'] a","[class*='advisor'] a"];
+    for (const sel of profileSelectors) addLinks(document.querySelectorAll(sel), "profile");
     addLinks(document.querySelectorAll("a[href]"), "body");
-
     return results.slice(0, 200);
   }
 
   const links = collectLinks();
-
   const schemaPeople = collectPeopleFromJsonLd();
   const domPeople = collectPeopleFromDom();
   const textPeople = collectPeopleFromText();
@@ -772,51 +722,34 @@ function getSiteRoot(url) {
 function scoreLink(link, origin, focus = "business") {
   try {
     const parsed = new URL(link.href);
-    if (parsed.origin !== origin) {
-      return -1;
-    }
+    if (parsed.origin !== origin) return -1;
     let score = 0;
     const haystack = `${link.text} ${parsed.pathname}`.toLowerCase();
-    // Trust boost: nav/footer/sitemap links are deliberate navigation choices
-    if (link.source === "nav")      score += 6;
-    if (link.source === "footer")   score += 4;
-    if (link.source === "sitemap")  score += 5;
-    if (link.source === "profile")  score += 8;
+    if (link.source === "nav")     score += 6;
+    if (link.source === "footer")  score += 4;
+    if (link.source === "sitemap") score += 5;
+    if (link.source === "profile") score += 8;
     if (focus === "employee") {
-      // Strongest signals — dedicated people/team pages
-      // Direct people/team page paths
       if (/(\/team|\/people|\/staff|\/crew|\/leadership|\/leaders|\/management|\/founders|\/directors|\/executives|\/board|\/advisors|\/partners|\/our-team|\/meet-the-team|\/meet-us|\/our-people|\/who-we-are|\/employees|\/agents|\/agent|\/member|\/members|\/consultants|\/practitioners|\/specialists|\/professionals|\/attorneys|\/lawyers|\/doctors|\/therapists|\/coaches|\/trainers)/.test(parsed.pathname)) score += 20;
-      // Sub-paths like /about/our-team or /about/team
       if (/(\/about\/(our-team|team|staff|people|us|leadership|management|founders))/.test(parsed.pathname)) score += 22;
-      // Individual profile pages like /agents/john-smith or /team/jane-doe
       if (/\/(agents?|team|staff|people|members?|profile|bio)\/.+/.test(parsed.pathname)) score += 15;
       if (/(team|people|staff|crew|leadership|leaders|management|founders|directors|executives|board|advisors|our team|meet the team|meet us|our people|who we are|employees|agents|consultants|practitioners)/.test(haystack)) score += 12;
-      // About pages often have team sections
       if (/(\/about|\/company|\/overview|\/us|\/our-story|\/our-company)/.test(parsed.pathname)) score += 8;
       if (/(about us|about|company|our story)/.test(haystack)) score += 5;
-      // Contact pages sometimes list people
       if (/(contact|locations|office)/.test(haystack)) score += 3;
-      // Penalise non-people pages
       if (/(\/blog|\/news|\/press|\/jobs|\/careers|\/products|\/services|\/pricing|\/faq|\/support)/.test(parsed.pathname)) score -= 5;
     } else {
-      // Strongest: dedicated services/products pages by pathname
-      if (/(\/services|\/solutions|\/what-we-do|\/capabilities|\/offerings|\/products|\/our-services|\/our-work|\/work|\/expertise|\/specialties|\/specialties|\/practice-areas|\/what-we-offer)/.test(parsed.pathname)) score += 20;
+      if (/(\/services|\/solutions|\/what-we-do|\/capabilities|\/offerings|\/products|\/our-services|\/our-work|\/work|\/expertise|\/specialties|\/practice-areas|\/what-we-offer)/.test(parsed.pathname)) score += 20;
       if (/(services|solutions|what we do|capabilities|offerings|products|our services|expertise|specialties|practice areas|what we offer)/.test(haystack)) score += 12;
-      // About / company pages reveal business type
       if (/(\/about|\/company|\/about-us|\/our-story|\/who-we-are|\/overview|\/our-company)/.test(parsed.pathname)) score += 12;
       if (/(about|company|overview|our story|who we are)/.test(haystack)) score += 8;
-      // Industry / portfolio pages
       if (/(\/industries|\/clients|\/portfolio|\/case-studies|\/projects|\/work|\/results)/.test(parsed.pathname)) score += 8;
       if (/(industries|clients|portfolio|case studies|projects|results)/.test(haystack)) score += 4;
-      // Contact / location pages confirm business presence
       if (/(contact|locations|office)/.test(haystack)) score += 2;
-      // Team/people pages reveal business type via bios and descriptions
       if (/(\/team|\/people|\/staff|\/leadership|\/founders|\/about-us|\/our-team|\/who-we-are|\/our-people|\/management)/.test(parsed.pathname)) score += 8;
       if (/(team|our team|meet the team|leadership|founders|who we are|our people)/.test(haystack)) score += 5;
-      // Penalise blog/news/careers — low signal for business type
       if (/(\/blog|\/news|\/press|\/jobs|\/careers|\/faq|\/support|\/help)/.test(parsed.pathname)) score -= 4;
     }
-    // Homepage is low value for employee search
     if (focus === "employee" && (parsed.pathname === "/" || parsed.pathname === "")) score += 1;
     else if (parsed.pathname === "/" || parsed.pathname === "") score += 6;
     if (parsed.hash) score -= 3;
@@ -832,32 +765,21 @@ function buildCandidateUrls(pageData, maxPages = MAX_RESEARCH_PAGES, focus = "bu
     .map((link) => ({ ...link, score: scoreLink(link, origin, focus) }))
     .filter((link) => link.score > 0)
     .sort((a, b) => b.score - a.score);
-
-  // For employee focus, seed with the current page only — top-scored links
-  // (team/people pages) get priority slots instead of wasting one on homepage
-  const seedUrls = focus === "employee"
-    ? [pageData.url]
-    : [pageData.url, getSiteRoot(pageData.url)];
-
+  const seedUrls = focus === "employee" ? [pageData.url] : [pageData.url, getSiteRoot(pageData.url)];
   const urls = [...seedUrls];
   for (const link of rankedLinks) {
     if (!urls.includes(link.href)) urls.push(link.href);
     if (urls.length >= maxPages + 2) break;
   }
-
   return [...new Set(urls)].slice(0, maxPages);
 }
-
-// ── New 3-step AI-driven flow ────────────────────────────────
 
 async function waitForTabComplete(tabId) {
   return new Promise((resolve, reject) => {
     let loadingFallbackId = null;
-
     const timeoutId = setTimeout(() => {
       clearTimeout(loadingFallbackId);
       chrome.tabs.onUpdated.removeListener(handleUpdated);
-      // Last-chance: try to resolve with whatever state the tab is in
       chrome.tabs.get(tabId).then(resolve).catch(() => {
         reject(new Error("The website took too long to load."));
       });
@@ -870,15 +792,11 @@ async function waitForTabComplete(tabId) {
     }
 
     function handleUpdated(updatedTabId, changeInfo, tab) {
-      if (updatedTabId !== tabId) {
-        return;
-      }
+      if (updatedTabId !== tabId) return;
       if (changeInfo.status === "complete") {
         cleanup();
         resolve(tab);
       } else if (changeInfo.status === "loading" && tab.url && tab.url !== "about:blank") {
-        // Some sites stay in "loading" forever in background tabs —
-        // wait an extra 8s after the loading event then proceed anyway.
         clearTimeout(loadingFallbackId);
         loadingFallbackId = setTimeout(() => {
           chrome.tabs.onUpdated.removeListener(handleUpdated);
@@ -906,12 +824,10 @@ async function extractPageDataFromTab(tabId) {
   if (!isSupportedUrl(tab.url)) {
     throw new Error("This page cannot be analyzed. Use a regular website URL.");
   }
-
   const results = await chrome.scripting.executeScript({
     target: { tabId },
     func: extractPageData
   });
-
   const pageData = results?.[0]?.result;
   if (!pageData) {
     throw new Error("Unable to read that page.");
@@ -919,12 +835,10 @@ async function extractPageDataFromTab(tabId) {
   return pageData;
 }
 
-// ── Step 1: Extract homepage data (links + body) from a tab ──
 async function extractHomepageData(tabId) {
   return await extractPageDataFromTab(tabId);
 }
 
-// ── Step 2: Fetch content from a single URL in a background tab ──
 async function fetchPageInBackground(url) {
   let tempTab = null;
   try {
@@ -938,14 +852,11 @@ async function fetchPageInBackground(url) {
   }
 }
 
-// ── Core 3-step AI-driven analysis ───────────────────────────
 async function analyzeTab(tabId) {
-  // STEP 1: Extract homepage — get links + light content
   setStatus("Reading homepage links...");
   setProgress(20);
   const homepage = await extractHomepageData(tabId);
 
-  // Prepare a compact link list for AI (url + anchor text only)
   const origin = new URL(homepage.url).origin;
   const linkList = (homepage.links || [])
     .filter(l => {
@@ -954,7 +865,6 @@ async function analyzeTab(tabId) {
     .slice(0, 200)
     .map(l => ({ text: l.text?.slice(0, 60), url: l.href }));
 
-  // STEP 2: Ask AI which pages to fetch
   setStatus("AI is selecting the best pages to analyze...");
   setProgress(40);
   const pickResponse = await chrome.runtime.sendMessage({
@@ -977,13 +887,11 @@ async function analyzeTab(tabId) {
     .filter(u => isSupportedUrl(u) && u !== homepage.url)
     .slice(0, 3);
 
-  // STEP 3: Fetch picked pages in parallel, then classify
   setStatus(`Fetching ${pickedUrls.length} selected page(s)...`);
   setProgress(60);
 
   const extraPages = await Promise.all(pickedUrls.map(fetchPageInBackground));
   const allPages = [homepage, ...extraPages.filter(Boolean)];
-
   const allPeople = dedupePeople(allPages.flatMap(p => p.people || [])).slice(0, 25);
   const allTeamSnippets = [...new Set(allPages.flatMap(p => p.teamSnippets || []))].slice(0, 8);
 
@@ -1023,7 +931,6 @@ async function analyzeTab(tabId) {
     title: homepage.title,
     url: homepage.url,
     researchedPageCount: allPages.length,
-    // Save link list so employee analysis can reuse it without re-opening the homepage
     cachedLinkList: linkList,
     people: latestResult?.url === homepage.url ? latestResult.people || [] : [],
     teamSummary: latestResult?.url === homepage.url ? latestResult.teamSummary || "" : "",
@@ -1046,11 +953,9 @@ async function analyzeCurrentTab() {
     const tabs = await chrome.tabs.query({ currentWindow: true });
     const targetTab = tabs.find((tab) => tab.active && isSupportedUrl(tab.url))
       || tabs.find((tab) => isSupportedUrl(tab.url));
-
     if (!targetTab?.id) {
       throw new Error("No regular website tab found in this window.");
     }
-
     updateDomainBadge(targetTab.url);
     elements.recentSiteNote.textContent = `Using current tab: ${targetTab.url}`;
     await analyzeTab(targetTab.id);
@@ -1101,7 +1006,6 @@ async function analyzeEmployeeDetailsForUrl(url) {
     await saveSettings();
     updateDomainBadge(url);
 
-    // STEP 4: Reuse cached link list from step 1 — no page re-open needed
     const linkList = latestResult?.cachedLinkList || [];
     if (!linkList.length) {
       throw new Error("No cached links found. Please run a full site analysis first.");
@@ -1129,13 +1033,12 @@ async function analyzeEmployeeDetailsForUrl(url) {
 
     const pickedUrls = (pickResponse.urls || [])
       .filter(u => isSupportedUrl(u))
-      .slice(0, 6); // allow up to 6 pages for employee analysis
+      .slice(0, 6);
 
     if (!pickedUrls.length) {
       throw new Error("AI could not identify any team/people pages from the site links.");
     }
 
-    // STEP 5: Fetch only the picked pages and extract employee details
     setStatus(`Fetching ${pickedUrls.length} team page(s)...`);
     setProgress(60);
 
@@ -1162,8 +1065,8 @@ async function analyzeEmployeeDetailsForUrl(url) {
         title: p.title,
         url: p.url,
         headings: (p.headings || []).slice(0, 8),
-        bodyText: trimText(p.bodyText, 2000), // much more body text per page
-        people: normalizePeople(p.people || []).slice(0, 30) // more people per page
+        bodyText: trimText(p.bodyText, 2000),
+        people: normalizePeople(p.people || []).slice(0, 30)
       }))
     };
 
@@ -1179,7 +1082,6 @@ async function analyzeEmployeeDetailsForUrl(url) {
       throw new Error(response?.error || "Unknown employee analysis error.");
     }
 
-    // STEP 6: Merge and display employee results
     const mergedResult = {
       ...(latestResult || {}),
       people: response.result.people || [],
@@ -1193,6 +1095,9 @@ async function analyzeEmployeeDetailsForUrl(url) {
     await chrome.storage.local.set({ [LATEST_RESULT_KEY]: mergedResult });
     setProgress(100);
     setStatus("Employee analysis complete.");
+
+    // Restore keyword status after employee analysis completes
+    renderKeywordTags();
   } catch (error) {
     setProgress(0);
     setStatus(error.message || "Employee analysis failed.", true);
@@ -1200,6 +1105,8 @@ async function analyzeEmployeeDetailsForUrl(url) {
     setBusy(false);
   }
 }
+
+// ── Event listeners ──────────────────────────────────────────
 
 elements.saveSettings.addEventListener("click", () => {
   saveSettings().catch((error) => setStatus(error.message || "Save failed.", true));
@@ -1231,7 +1138,6 @@ elements.targetUrl.addEventListener("keydown", (event) => {
     analyzeTargetUrl().catch((error) => setStatus(error.message || "Analysis failed.", true));
   }
 });
-
 elements.targetUrl.addEventListener("input", () => {
   updateDomainBadge(elements.targetUrl.value.trim());
 });
@@ -1239,6 +1145,24 @@ elements.provider.addEventListener("change", () => {
   updateProviderFields(elements.provider.value);
 });
 
-Promise.all([loadSettings(), loadState()]).catch((error) => {
+document.getElementById("kwAdd").addEventListener("click", () => {
+  const input = document.getElementById("kwInput");
+  addKeyword(input.value);
+  input.value = "";
+});
+document.getElementById("kwInput").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") {
+    e.preventDefault();
+    const input = document.getElementById("kwInput");
+    addKeyword(input.value);
+    input.value = "";
+  }
+});
+document.getElementById("kwTags").addEventListener("click", (e) => {
+  const i = e.target.dataset.i;
+  if (i !== undefined) removeKeyword(+i);
+});
+
+Promise.all([loadSettings(), loadState(), loadKeywords()]).catch((error) => {
   setStatus(error.message || "Failed to load dashboard.", true);
 });
